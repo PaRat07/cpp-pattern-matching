@@ -1,18 +1,17 @@
+#include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <vector>
-#include <cstdint>
-#include <optional>
-#include <array>
-#include <utility>
-#include <ranges>
+#include <exception>
 #include <format>
+#include <memory>
+#include <optional>
+#include <print>
+#include <ranges>
 #include <tuple>
+#include <utility>
 #include <variant>
 #include <vector>
-#include <memory>
-#include <exception>
-#include <print>
 
 
 #define fwd(...) std::forward<decltype(__VA_ARGS__)>(__VA_ARGS__)
@@ -182,12 +181,32 @@ struct Let {
 
     T& res;
 
-    bool Satisfy(const auto& val) const {
-        return Is<T>(val);
+    template<std::convertible_to<T> ValT>
+    bool Satisfy(const ValT& val) const {
+        return true;
     }
 
-    void Substitute(auto&& val) {
+    template<typename ValT> requires ([] <typename... Ts> (std::type_identity<std::variant<Ts...>>) {
+            return (std::convertible_to<Ts, T> || ...);
+        } (std::type_identity<std::remove_cvref_t<ValT>>{}))
+    bool Satisfy(const ValT& val) const {
+        return std::visit([] (const auto& val) {
+            return std::convertible_to<std::remove_cvref_t<decltype(val)>, T>;
+        }, val);
+    }
+
+    template<std::convertible_to<T> ValT>
+    void Substitute(ValT&& val) {
         res = fwd(val);
+    }
+
+    template<typename ValT> requires ([] <typename... Ts> (std::type_identity<std::variant<Ts...>>) {
+            return (std::convertible_to<Ts, T> || ...);
+        } (std::type_identity<std::remove_cvref_t<ValT>>{}))
+    void Substitute(ValT&& val) {
+        std::visit([this] (auto&& val) {
+            res = fwd(val);
+        }, val);
     }
 };
 static_assert(PatternC<Let<int>, int>);
@@ -206,11 +225,55 @@ using InferAdt = decltype(InferAdtImpl(std::declval<T>()))::type;
 template<typename... Ts>
 std::type_identity<std::tuple<Ts...>> InferTupleImpl(const std::tuple<Ts...>&);
 
+template<typename... Ts>
+std::type_identity<std::variant<Ts...>> InferVariantImpl(const std::variant<Ts...>&);
+
 template<typename T>
 constexpr bool kIsTuple = requires(T obj) { InferTupleImpl(obj); };
 
 template<typename T>
 using InferTule = decltype(InferTupleImpl(std::declval<T>()))::type;
+}
+
+template<typename PatT, typename ValT>
+concept VisitSatisfyable = requires (ValT val) { util::InferVariantImpl(val); } &&
+            [] <typename... Ts> (std::type_identity<std::variant<Ts...>>) {
+                return (requires (PatT pat) { pat.Satisfy(std::declval<Ts>()); } || ...);
+            } (std::type_identity<std::remove_cvref_t<decltype(InferAdt(std::declval<ValT>()))>>{});
+
+
+template<typename PatT, typename ValT>
+concept VisitSubstitable = requires (ValT val) { util::InferVariantImpl(val); } &&
+            [] <typename... Ts> (std::type_identity<std::variant<Ts...>>) {
+                return (requires (PatT pat) { pat.Substitute(std::declval<Ts>()); } || ...);
+            } (std::type_identity<std::remove_cvref_t<decltype(InferAdt(std::declval<ValT>()))>>{});
+
+bool Satisfy(const auto& pat, const auto& val) requires (requires { pat.Satisfy(fwd(val)); } || VisitSatisfyable<decltype(pat), decltype(val)>) {
+    if constexpr (requires { pat.Satisfy(val); }) {
+        return pat.Satisfy(val);
+    } else {
+        return std::visit([&pat] (const auto& val) {
+            if constexpr (requires { pat.Satisfy(val); }) {
+                return pat.Satisfy(val);
+            } else {
+                return false;
+            }
+        }, val);
+    }
+}
+
+void Substitute(auto&& pat, auto&& val) requires (requires { pat.Substitute(fwd(val)); } || VisitSubstitable<decltype(pat), decltype(val)>) {
+    if constexpr (requires { pat.Substitute(fwd(val)); }) {
+        pat.Substitute(fwd(val));
+    } else {
+        std::visit([&pat] (auto&& val) {
+            if constexpr (requires { pat.Substitute(fwd(val)); }) {
+                return pat.Substitute(fwd(val));
+            } else {
+                std::terminate();
+            }
+        }, fwd(val));
+    }
 }
 
 template<typename T, typename... Ts>
@@ -220,75 +283,61 @@ template<typename T, typename PatT> requires (!util::kIsTuple<T>)
 struct DecT<T, PatT> {
     DecT(PatT in_pat) : pat(in_pat) {}
 
-    bool Satisfy(const auto& val) const {
-        return Is<T>(val) && std::visit([this] (const auto& val) {
-            return pat.Satisfy(val);
-        }, As<T>(val));
+    bool Satisfy(const T& val) const {
+        return Satisfy(pat, InferAdt(val));
     }
 
     void Substitute(auto&& val) {
-        std::visit([this] (auto&& val) {
-            pat.Substitute(fwd(val));
-        }, std::forward_like<decltype(val)>(As<T>(val)));
+        return Substitute(pat, fwd(val));
     }
 
 
     PatT pat;
 };
 
+
 template<typename T, typename... Ts> requires util::kIsTuple<T>
 struct DecT<T, Ts...> {
     DecT(Ts... in_pats) : pats(in_pats...) {}
 
-    bool Satisfy(const auto& val) const {
-        return Is<T>(InferAdt(val)) && std::apply([&val] (const auto&... deced_pats) {
+    bool Satisfy(const T& val) const {
+        return std::apply([&val] (const auto&... deced_pats) {
             return std::apply([&deced_pats...] (const auto&... deced_vals) {
-                return (deced_pats.Satisfy(deced_vals) && ...);
-            }, InferAdt(As<T>(InferAdt(val))));
+                return (::Satisfy(deced_pats, deced_vals) && ...);
+            }, InferAdt(val));
         }, pats);
     }
 
-    void Substitute(util::InferTule<T>& val) {
-        std::apply([this] (auto&&... deced_args) {
-            SubstImpl(fwd(deced_args)...);
-        }, fwd(val));
-    }
-
-    void Substitute(auto&& val) {
+    void Substitute(auto&& val) requires (std::is_same_v<T, std::remove_cvref_t<decltype(val)>>) {
         std::apply([this] (auto&&... deced_args) {
             std::apply([&deced_args...] (auto&&... deced_pats) {
-                (deced_pats.Substitute(fwd(deced_args)), ...);
+                (::Substitute(deced_pats, fwd(deced_args)), ...);
             }, pats);
-        }, InferAdt(As<T>(InferAdt(fwd(val)))));
+        }, InferAdt(fwd(val)));
     }
-
-    void SubstImpl(auto&&... deced_args) {
-        std::apply([&deced_args...] (auto&&... deced_pats) {
-            (deced_pats.Substitute(fwd(deced_args)), ...);
-        }, pats);
-    }
-
 
     std::tuple<Ts...> pats;
 };
 
 template<typename T>
+constexpr auto DecFunctor = [] (auto... pats) { return DecT<T, decltype(pats)...>(pats...); };
+
+template<typename T>
 auto Dec(auto... pats) {
-    // static_assert(!util::kIsTuple<T>);
     return DecT<T, decltype(pats)...>(pats...);
 }
 
 template<typename Pat>
-struct Derefed {
-    Derefed(Pat p) : pat(p) {}
+struct unbox {
+    unbox(Pat p) : pat(p) {}
 
 
-    bool Satisfy(const auto& val) const {
-        return val && pat.Satisfy(*val);
+    bool Satisfy(const auto& val) const requires(requires(Pat pat) { Satisfy(pat, *val); }) {
+        return val && ::Satisfy(pat, *val);
     }
 
     void Substitute(auto&& val) {
-        pat.Substitute(*fwd(val));
+        ::Substitute(pat, std::forward_like<decltype(val)>(*val));
     }
 
 
@@ -308,11 +357,11 @@ struct Case {
         CallbackT callback;
 
         bool Satisfy(const auto& val) const {
-            return case_.pattern.Satisfy(std::as_const(val));
+            return ::Satisfy(case_.pattern, InferAdt(val));
         }
 
         auto Substitute(auto&& val) {
-            case_.pattern.Substitute(fwd(val));
+            ::Substitute(case_.pattern, InferAdt(fwd(val)));
             return callback();
         }
     };
@@ -392,7 +441,7 @@ struct Literal : std::tuple<int> {
 };
 
 struct FunctionCall : std::tuple<std::string, std::vector<Expr>> {
-    std::string_view func_name() const;
+    std::string_view func_name() const { return std::get<0>(*this); }
     std::span<const Expr> args() const;
 };
 
@@ -401,19 +450,24 @@ struct Add : std::tuple<std::unique_ptr<Expr>, std::unique_ptr<Expr>> {
     Expr* rhs() const;
 };
 
-struct Expr : std::variant<Literal, FunctionCall, Add> {};
+struct Expr : std::variant<Literal, FunctionCall, Add> {
+    static constexpr auto Literal = DecFunctor<::Literal>;
+    static constexpr auto FunctionCall = DecFunctor<::FunctionCall>;
+    static constexpr auto Add = DecFunctor<::Add>;
+};
 
 std::unique_ptr<Expr> _new(auto&&... args) {
     return std::make_unique<Expr>(fwd(args)...);
 }
 
+
 int main() {
     auto vec = std::vector(std::from_range, std::array{Expr(Literal(1))} | std::views::as_rvalue);
     auto expr = Expr(Add({ _new(Literal(2)), _new(FunctionCall({ "f", std::move(vec) }))}));
-    int val;
+    FunctionCall fcall;
     Match(std::move(expr)) (
-        Case(Dec<Literal>(_)) <=> [&] {  },
-        Case(Dec<Add>(Derefed(Dec<Literal>(_)), _)) <=> [&] { std::println("succ"); }
+        Case(Expr::Literal(_)) <=> [&] {  },
+        Case(Expr::Add(unbox(Expr::Literal(_)), unbox(Let(fcall)))) <=> [&] { std::println("succ: {}", fcall.func_name()); }
     );
     return 0;
 }
