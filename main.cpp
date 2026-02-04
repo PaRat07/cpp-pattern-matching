@@ -20,86 +20,11 @@ std::strong_ordering CmpViability(const auto&, const auto&) {
     return std::strong_ordering::equal;
 }
 
-template<typename T, typename U>
-bool Is(const U&) {
-    return std::is_same_v<T, U>;
-}
-
-template<typename T>
-T As(const auto&) {
-    std::terminate();
-}
-
-template<typename T>
-T As(T obj) {
-    return obj;
-}
-
-template<typename T, typename... Ts>
-bool Is(const std::variant<Ts...>& var) {
-    static_assert((std::is_same_v<T, Ts> || ...));
-    return std::holds_alternative<T>(var);
-}
-
-template<typename T, typename... Ts>
-T&& As(std::variant<Ts...>&& var) {
-    static_assert((std::is_same_v<T, Ts> || ...));
-    return std::get<T>(fwd(var));
-}
-
-template<typename T, typename... Ts>
-T& As(std::variant<Ts...>& var) {
-    static_assert((std::is_same_v<T, Ts> || ...));
-    return std::get<T>(fwd(var));
-}
-
-template<typename T, typename... Ts>
-const T& As(const std::variant<Ts...>& var) {
-    static_assert((std::is_same_v<T, Ts> || ...));
-    return std::get<T>(fwd(var));
-}
-
-template<typename T>
-bool Is(const std::optional<T>& opt) {
-    return opt.has_value();
-}
-
-template<typename T>
-T As(std::optional<T>&& opt) {
-    return std::move(opt.value());
-}
-
-template<std::same_as<std::nullopt_t>, typename T>
-bool Is(const std::optional<T>& opt) {
-    return !opt.has_value();
-}
-
-template<std::same_as<std::nullopt_t>, typename T>
-std::nullopt_t As(const std::optional<T>& opt) {
-    if (opt) {
-        throw std::bad_optional_access{};
-    }
-    return std::nullopt;
-}
-
-template<typename T, typename U> requires(std::is_lvalue_reference_v<T> && std::is_same_v<std::remove_cvref_t<T>, U>)
-bool Is(U* ptr) {
-    return ptr;
-}
-
 struct BadAsCast : std::bad_cast {
     const char* what() const noexcept override {
         return "bad cast with As<T>(obj)";
     }
 };
-
-template<typename T, typename U> requires(std::is_lvalue_reference_v<T> && std::is_same_v<std::remove_cvref_t<T>, U>)
-T As(U* ptr) {
-    if (!ptr) {
-        throw BadAsCast{};
-    }
-    return *ptr;
-}
 
 template<typename... Ts>
 std::variant<Ts...>& InferAdtImpl(std::variant<Ts...>& obj) {
@@ -408,13 +333,17 @@ auto Match(auto&& val) {
                             return true;
                     } else if (cmp_res == std::strong_ordering::greater) {
                     } else if (cmp_res == std::strong_ordering::equal) {
-                        [] noexcept {
+                        try {
                             throw std::invalid_argument("ambiguous");
-                        } ();
+                        } catch (...) {
+                            std::terminate();
+                        }
                     } else {
-                        [] noexcept {
+                        try {
                             throw std::invalid_argument("invalid std::strong_ordering value");
-                        } ();
+                        } catch (...) {
+                            std::terminate();
+                        }
                     }
                 }
                 return false;
@@ -459,7 +388,6 @@ struct Expr : std::variant<Literal, FunctionCall, Add> {
 std::unique_ptr<Expr> _new(auto&&... args) {
     return std::make_unique<Expr>(fwd(args)...);
 }
-
 
 int main() {
     auto vec = std::vector(std::from_range, std::array{Expr(Literal(1))} | std::views::as_rvalue);
