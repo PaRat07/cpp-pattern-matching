@@ -12,6 +12,7 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#include <pfr.hpp>
 
 
 #define fwd(...) std::forward<decltype(__VA_ARGS__)>(__VA_ARGS__)
@@ -183,6 +184,9 @@ template<typename T>
 constexpr bool kIsTuple = requires(T obj) { InferTupleImpl(obj); };
 
 template<typename T>
+constexpr bool kIsVariant = requires(T obj) { InferVariantImpl(obj); };
+
+template<typename T>
 using InferTule = decltype(InferTupleImpl(std::declval<T>()))::type;
 }
 
@@ -241,7 +245,7 @@ constexpr std::strong_ordering kCmpViability<DecT<T, SubPats1...>, DecT<T, SubPa
     }
 } ();
 
-template<typename T, typename PatT> requires (!util::kIsTuple<T>)
+template<typename T, typename PatT> requires util::kIsVariant<T>
 struct DecT<T, PatT> : PatternTag<DecT<T, PatT>> {
     DecT(PatT in_pat) : pat(in_pat) {}
 
@@ -257,25 +261,30 @@ struct DecT<T, PatT> : PatternTag<DecT<T, PatT>> {
     PatT pat;
 };
 
+decltype(auto) pfr_apply(auto&& fn, auto&& aggr) {
+    return [&fn, &aggr] <size_t... Idxs> (std::index_sequence<Idxs...>) -> decltype(auto) {
+        return fwd(fn)(pfr::get<Idxs>(fwd(aggr))...);
+    } (std::make_index_sequence<pfr::tuple_size_v<std::remove_cvref_t<decltype(aggr)>>>{});
+}
 
-template<typename T, typename... Ts> requires util::kIsTuple<T>
+template<typename T, typename... Ts> requires (!util::kIsVariant<T>)
 struct DecT<T, Ts...> : PatternTag<DecT<T, Ts...>> {
     DecT(Ts... in_pats) : pats(in_pats...) {}
 
     bool Satisfy(const T& val) const {
         return std::apply([&val] (const auto&... deced_pats) {
-            return std::apply([&deced_pats...] (const auto&... deced_vals) {
+            return pfr_apply([&deced_pats...] (const auto&... deced_vals) {
                 return (::Satisfy(deced_pats, deced_vals) && ...);
-            }, InferAdt(val));
+            }, fwd(val));
         }, pats);
     }
 
     void Substitute(auto&& val) requires (std::is_same_v<T, std::remove_cvref_t<decltype(val)>>) {
-        std::apply([this] (auto&&... deced_args) {
-            std::apply([&deced_args...] (auto&&... deced_pats) {
-                (::Substitute(deced_pats, fwd(deced_args)), ...);
-            }, pats);
-        }, InferAdt(fwd(val)));
+        std::apply([&val] (auto&&... deced_pats) {
+            return pfr_apply([&deced_pats...] (auto&&... deced_vals) {
+                (::Substitute(deced_pats, fwd(deced_vals)), ...);
+            }, fwd(val));
+        }, pats);
     }
 
     std::tuple<Ts...> pats;
@@ -351,6 +360,8 @@ std::strong_ordering CmpViability(auto&& lhs, auto&& rhs) {
 }
 
 
+
+
 auto Match(auto&& val) {
     return [&val] (auto&&... complete_cases) mutable {
         const auto sat = std::array{ complete_cases.Satisfy(std::as_const(val))... };
@@ -401,18 +412,18 @@ auto Match(auto&& val) {
 
 struct Expr;
 
-struct Literal : std::tuple<int> {
-    int value();
+struct Literal {
+    int value;
 };
 
-struct FunctionCall : std::tuple<std::string, std::vector<Expr>> {
-    std::string_view func_name() const { return std::get<0>(*this); }
-    std::span<const Expr> args() const;
+struct FunctionCall {
+    std::string func_name;
+    std::vector<Expr> args;
 };
 
-struct Add : std::tuple<std::unique_ptr<Expr>, std::unique_ptr<Expr>> {
-    Expr* lhs() const;
-    Expr* rhs() const;
+struct Add {
+    std::unique_ptr<Expr> lhs;
+    std::unique_ptr<Expr> rhs;
 };
 
 struct Expr : std::variant<Literal, FunctionCall, Add> {
@@ -432,7 +443,7 @@ int main() {
     Match(std::move(expr)) (
         _ <=> [&] { std::terminate();  },
         Expr::Add(_, _) <=> [&] { std::terminate();  },
-        Expr::Add(unbox(Expr::Literal(_)), unbox(Let(fcall))) <=> [&] { std::println("succ: {}", fcall.func_name()); }
+        Expr::Add(unbox(Expr::Literal(_)), unbox(Let(fcall))) <=> [&] { std::println("succ: {}", fcall.func_name); }
     );
     return 0;
 }
