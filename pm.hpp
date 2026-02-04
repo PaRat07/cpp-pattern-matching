@@ -6,7 +6,7 @@
 #include <utility>
 #include <variant>
 
-#include <pfr.hpp>
+#include <boost/pfr.hpp>
 
 
 #define fwd(...) std::forward<decltype(__VA_ARGS__)>(__VA_ARGS__)
@@ -257,8 +257,8 @@ struct DecT<T, PatT> : PatternTag<DecT<T, PatT>> {
 
 decltype(auto) pfr_apply(auto&& fn, auto&& aggr) {
     return [&fn, &aggr] <size_t... Idxs> (std::index_sequence<Idxs...>) -> decltype(auto) {
-        return fwd(fn)(pfr::get<Idxs>(fwd(aggr))...);
-    } (std::make_index_sequence<pfr::tuple_size_v<std::remove_cvref_t<decltype(aggr)>>>{});
+        return fwd(fn)(boost::pfr::get<Idxs>(fwd(aggr))...);
+    } (std::make_index_sequence<boost::pfr::tuple_size_v<std::remove_cvref_t<decltype(aggr)>>>{});
 }
 
 template<typename T, typename... Ts> requires (!util::kIsVariant<T>)
@@ -269,7 +269,7 @@ struct DecT<T, Ts...> : PatternTag<DecT<T, Ts...>> {
         return std::apply([&val] (const auto&... deced_pats) {
             return pfr_apply([&deced_pats...] (const auto&... deced_vals) {
                 return (::Satisfy(deced_pats, deced_vals) && ...);
-            }, fwd(val));
+            }, val);
         }, pats);
     }
 
@@ -298,7 +298,13 @@ struct unbox : PatternTag<unbox<Pat>> {
 
 
     bool Satisfy(const auto& val) const requires(requires(Pat pat) { Satisfy(pat, *val); }) {
-        return val && ::Satisfy(pat, *val);
+        if constexpr (requires{ static_cast<bool>(val); }) {
+            return static_cast<bool>(val) && ::Satisfy(pat, *val);
+        } else if constexpr (requires{ val.valueless_after_move(); }) {
+            return !val.valueless_after_move() && ::Satisfy(pat, *val);
+        } else {
+            static_assert(false);
+        }
     }
 
     void Substitute(auto&& val) {
