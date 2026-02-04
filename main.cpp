@@ -16,6 +16,13 @@
 
 #define fwd(...) std::forward<decltype(__VA_ARGS__)>(__VA_ARGS__)
 
+
+template<typename T, template<typename> typename TagT>
+concept TaggedWithC = std::is_base_of_v<TagT<T>, T>;
+
+template<typename T>
+struct PatternTag {};
+
 template<typename T, typename U>
 constexpr std::strong_ordering kCmpViability = std::strong_ordering::equal;
 
@@ -67,7 +74,7 @@ concept PatternC = requires (T obj, MatchedT matched) {
 
 
 template<auto Val>
-struct cw {
+struct cw : PatternTag<cw<Val>> {
     static constexpr auto value = Val;
     using type = decltype(Val);
 
@@ -81,7 +88,7 @@ struct cw {
 static_assert(PatternC<cw<0>, int>);
 
 
-constexpr struct PlaceHolder {
+constexpr struct PlaceHolder : PatternTag<PlaceHolder> {
     bool Satisfy(const auto& val) const {
         return true;
     }
@@ -104,7 +111,7 @@ static_assert(PatternC<PlaceHolder, std::type_identity<double>>);
 
 
 template<typename T>
-struct Let {
+struct Let : PatternTag<Let<T>> {
     Let(T& r) : res(r) {}
 
     T& res;
@@ -235,7 +242,7 @@ constexpr std::strong_ordering kCmpViability<DecT<T, SubPats1...>, DecT<T, SubPa
 } ();
 
 template<typename T, typename PatT> requires (!util::kIsTuple<T>)
-struct DecT<T, PatT> {
+struct DecT<T, PatT> : PatternTag<DecT<T, PatT>> {
     DecT(PatT in_pat) : pat(in_pat) {}
 
     bool Satisfy(const T& val) const {
@@ -252,7 +259,7 @@ struct DecT<T, PatT> {
 
 
 template<typename T, typename... Ts> requires util::kIsTuple<T>
-struct DecT<T, Ts...> {
+struct DecT<T, Ts...> : PatternTag<DecT<T, Ts...>> {
     DecT(Ts... in_pats) : pats(in_pats...) {}
 
     bool Satisfy(const T& val) const {
@@ -283,7 +290,7 @@ auto Dec(auto... pats) {
 }
 
 template<typename Pat>
-struct unbox {
+struct unbox : PatternTag<unbox<Pat>> {
     unbox(Pat p) : pat(p) {}
 
 
@@ -302,36 +309,28 @@ struct unbox {
 template<typename T, typename U>
 constexpr std::strong_ordering kCmpViability<unbox<T>, unbox<U>> = kCmpViability<T, U>;
 
+template<typename PatT, typename CallbackT>
+struct CompleteCase {
+    PatT pat;
+    CallbackT callback;
 
-template<typename PatternT>
-struct Case {
-    Case(PatternT pat) : pattern(pat) {}
+    bool Satisfy(const auto& val) const {
+        return ::Satisfy(pat, InferAdt(val));
+    }
 
-    PatternT pattern;
-
-    template<typename CallbackT>
-    struct CompleteCase {
-        Case case_;
-        CallbackT callback;
-
-        bool Satisfy(const auto& val) const {
-            return ::Satisfy(case_.pattern, InferAdt(val));
-        }
-
-        auto Substitute(auto&& val) {
-            ::Substitute(case_.pattern, InferAdt(fwd(val)));
-            return callback();
-        }
-    };
-
-    template<std::invocable<> T>
-    CompleteCase<T> operator<=>(T cb) {
-        return {
-            .case_ = *this,
-            .callback = std::move(cb)
-        };
+    auto Substitute(auto&& val) {
+        ::Substitute(pat, InferAdt(fwd(val)));
+        return callback();
     }
 };
+
+template<TaggedWithC<PatternTag> PatT, typename CallbackT>
+CompleteCase<PatT, CallbackT> operator<=>(PatT pat, CallbackT cb) {
+    return {
+        .pat = std::move(pat),
+        .callback = std::move(cb)
+    };
+}
 
 template<size_t From, size_t To>
 void ConstexprLoop(auto&& func) {
@@ -363,7 +362,7 @@ auto Match(auto&& val) {
             bool final_chosen = true;
             ConstexprLoop<Idx + 1, sizeof...(complete_cases)>([&] <size_t Idx1> (cw<Idx1>) mutable {
                 if (sat[Idx]) {
-                    std::strong_ordering cmp_res = CmpViability(complete_cases...[Idx].case_.pattern, complete_cases...[Idx1].case_.pattern);
+                    std::strong_ordering cmp_res = CmpViability(complete_cases...[Idx].pat, complete_cases...[Idx1].pat);
                     if (cmp_res == std::strong_ordering::less) {
                             self(cw<Idx1>{});
                             final_chosen = false;
@@ -431,8 +430,9 @@ int main() {
     auto expr = Expr(Add({ _new(Literal(2)), _new(FunctionCall({ "f", std::move(vec) }))}));
     FunctionCall fcall;
     Match(std::move(expr)) (
-        Case(Expr::Add(_, _)) <=> [&] { std::terminate();  },
-        Case(Expr::Add(unbox(Expr::Literal(_)), unbox(Let(fcall)))) <=> [&] { std::println("succ: {}", fcall.func_name()); }
+        _ <=> [&] { std::terminate();  },
+        Expr::Add(_, _) <=> [&] { std::terminate();  },
+        Expr::Add(unbox(Expr::Literal(_)), unbox(Let(fcall))) <=> [&] { std::println("succ: {}", fcall.func_name()); }
     );
     return 0;
 }
