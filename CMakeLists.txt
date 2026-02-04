@@ -4,3 +4,6 @@ project(pm)
 set(CMAKE_CXX_STANDARD 26)
 
 add_executable(pm main.cpp)
+
+
+#target_precompile_headers(pm PRIVATE )

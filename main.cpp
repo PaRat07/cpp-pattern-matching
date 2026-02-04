@@ -16,15 +16,8 @@
 
 #define fwd(...) std::forward<decltype(__VA_ARGS__)>(__VA_ARGS__)
 
-std::strong_ordering CmpViability(const auto&, const auto&) {
-    return std::strong_ordering::equal;
-}
-
-struct BadAsCast : std::bad_cast {
-    const char* what() const noexcept override {
-        return "bad cast with As<T>(obj)";
-    }
-};
+template<typename T, typename U>
+constexpr std::strong_ordering kCmpViability = std::strong_ordering::equal;
 
 template<typename... Ts>
 std::variant<Ts...>& InferAdtImpl(std::variant<Ts...>& obj) {
@@ -95,6 +88,16 @@ constexpr struct PlaceHolder {
 
     void Substitute(auto&& val) {}
 } _;
+
+template<typename T>
+constexpr std::strong_ordering kCmpViability<PlaceHolder, T> = std::strong_ordering::less;
+
+template<typename T>
+constexpr std::strong_ordering kCmpViability<T, PlaceHolder> = std::strong_ordering::greater;
+
+template<>
+constexpr std::strong_ordering kCmpViability<PlaceHolder, PlaceHolder> = std::strong_ordering::equal;
+
 static_assert(PatternC<PlaceHolder, int>);
 static_assert(PatternC<PlaceHolder, std::type_identity<double>>);
 
@@ -134,6 +137,22 @@ struct Let {
         }, val);
     }
 };
+
+template<typename T>
+constexpr std::strong_ordering kCmpViability<PlaceHolder, Let<T>> = std::strong_ordering::equal;
+
+template<typename T>
+constexpr std::strong_ordering kCmpViability<Let<T>, PlaceHolder> = std::strong_ordering::equal;
+
+template<typename T, typename U>
+constexpr std::strong_ordering kCmpViability<Let<T>, Let<U>> = std::strong_ordering::equal;
+
+template<typename T, typename U>
+constexpr std::strong_ordering kCmpViability<Let<T>, U> = std::strong_ordering::less;
+
+template<typename T, typename U>
+constexpr std::strong_ordering kCmpViability<T, Let<U>> = std::strong_ordering::greater;
+
 static_assert(PatternC<Let<int>, int>);
 static_assert(PatternC<Let<double>, std::variant<int, double>>);
 
@@ -204,6 +223,17 @@ void Substitute(auto&& pat, auto&& val) requires (requires { pat.Substitute(fwd(
 template<typename T, typename... Ts>
 struct DecT;
 
+template<typename T, typename... SubPats1, typename... SubPats2>
+constexpr std::strong_ordering kCmpViability<DecT<T, SubPats1...>, DecT<T, SubPats2...>> = [] {
+    if (((kCmpViability<SubPats1, SubPats2> == std::strong_ordering::less) && ...)) {
+        return std::strong_ordering::less;
+    } else if (((kCmpViability<SubPats1, SubPats2> == std::strong_ordering::greater) && ...)) {
+        return std::strong_ordering::greater;
+    } else {
+        return std::strong_ordering::equal;
+    }
+} ();
+
 template<typename T, typename PatT> requires (!util::kIsTuple<T>)
 struct DecT<T, PatT> {
     DecT(PatT in_pat) : pat(in_pat) {}
@@ -269,6 +299,9 @@ struct unbox {
     Pat pat;
 };
 
+template<typename T, typename U>
+constexpr std::strong_ordering kCmpViability<unbox<T>, unbox<U>> = kCmpViability<T, U>;
+
 
 template<typename PatternT>
 struct Case {
@@ -314,6 +347,10 @@ void ConstexprLoop(auto&& func) {
 template<typename T>
 using OptionalWrapped = std::conditional_t<std::is_same_v<void, T>, std::type_identity<void>, std::optional<T>>;
 
+std::strong_ordering CmpViability(auto&& lhs, auto&& rhs) {
+    return kCmpViability<std::remove_cvref_t<decltype(lhs)>, std::remove_cvref_t<decltype(rhs)>>;
+}
+
 
 auto Match(auto&& val) {
     return [&val] (auto&&... complete_cases) mutable {
@@ -326,7 +363,7 @@ auto Match(auto&& val) {
             bool final_chosen = true;
             ConstexprLoop<Idx + 1, sizeof...(complete_cases)>([&] <size_t Idx1> (cw<Idx1>) mutable {
                 if (sat[Idx]) {
-                    std::strong_ordering cmp_res = CmpViability(complete_cases...[Idx], complete_cases...[Idx1]);
+                    std::strong_ordering cmp_res = CmpViability(complete_cases...[Idx].case_.pattern, complete_cases...[Idx1].case_.pattern);
                     if (cmp_res == std::strong_ordering::less) {
                             self(cw<Idx1>{});
                             final_chosen = false;
@@ -394,7 +431,7 @@ int main() {
     auto expr = Expr(Add({ _new(Literal(2)), _new(FunctionCall({ "f", std::move(vec) }))}));
     FunctionCall fcall;
     Match(std::move(expr)) (
-        Case(Expr::Literal(_)) <=> [&] {  },
+        Case(Expr::Add(_, _)) <=> [&] { std::terminate();  },
         Case(Expr::Add(unbox(Expr::Literal(_)), unbox(Let(fcall)))) <=> [&] { std::println("succ: {}", fcall.func_name()); }
     );
     return 0;
