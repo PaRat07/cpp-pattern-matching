@@ -14,7 +14,7 @@ struct Literal {
 
 struct FunctionCall {
     std::string func_name;
-    std::vector<xyz::indirect<Expr>> args;
+    std::vector<Expr> args;
 };
 
 struct Add {
@@ -40,11 +40,13 @@ auto Vec(Ts&&... elems) -> std::vector<std::decay_t<std::common_type_t<Ts...>>> 
     return res;
 }
 
+
 int main() {
-    auto expr = Expr(Add{ _new(Literal(2)), _new(FunctionCall{ "f", Vec(_new(Literal(1)), _new(Literal(2))) })});
+    auto expr = Expr(Add{ _new(Literal(2)), _new(FunctionCall{ "f", Vec(Expr(Literal(1)), Expr(Literal(2))) })});
     FunctionCall fcall;
     Match(std::move(expr)) (
-        _ <=> [&] { std::terminate();  },
+        Expr::Literal(_) <=> [&] { std::terminate();  },
+        Expr::FunctionCall(_, _) <=> [&] { std::terminate();  },
         Expr::Add(_, _) <=> [&] { std::terminate();  },
         Expr::Add(unbox(Expr::Literal(_)), unbox(Let(fcall))) <=> [&] { std::println("succ: {}", fcall.func_name); }
     );

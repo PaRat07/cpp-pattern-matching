@@ -11,11 +11,11 @@ file(
 )
 include(${CMAKE_CURRENT_BINARY_DIR}/cmake/CPM.cmake)
 
-CPMAddPackage("gh:boostorg/pfr#boost-1.90.0")
+CPMAddPackage("gh:apolukhin/pfr_non_boost#2.3.2")
 CPMAddPackage("gh:jbcoe/value_types#v1.0.0")
 
 add_executable(pm main.cpp)
 
-target_link_libraries(pm PRIVATE Boost::pfr xyz_value_types)
+target_link_libraries(pm PRIVATE pfr::pfr xyz_value_types)
 
 #target_precompile_headers(pm PRIVATE )

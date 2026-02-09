@@ -6,7 +6,7 @@
 #include <utility>
 #include <variant>
 
-#include <boost/pfr.hpp>
+#include <pfr.hpp>
 
 
 #define fwd(...) std::forward<decltype(__VA_ARGS__)>(__VA_ARGS__)
@@ -257,8 +257,8 @@ struct DecT<T, PatT> : PatternTag<DecT<T, PatT>> {
 
 decltype(auto) pfr_apply(auto&& fn, auto&& aggr) {
     return [&fn, &aggr] <size_t... Idxs> (std::index_sequence<Idxs...>) -> decltype(auto) {
-        return fwd(fn)(boost::pfr::get<Idxs>(fwd(aggr))...);
-    } (std::make_index_sequence<boost::pfr::tuple_size_v<std::remove_cvref_t<decltype(aggr)>>>{});
+        return fwd(fn)(pfr::get<Idxs>(fwd(aggr))...);
+    } (std::make_index_sequence<pfr::tuple_size_v<std::remove_cvref_t<decltype(aggr)>>>{});
 }
 
 template<typename T, typename... Ts> requires (!util::kIsVariant<T>)
@@ -323,11 +323,11 @@ struct CompleteCase {
     PatT pat;
     CallbackT callback;
 
-    bool Satisfy(const auto& val) const {
+    bool Satisfy(const auto& val) const requires(requires{ ::Satisfy(pat, InferAdt(val)); }) {
         return ::Satisfy(pat, InferAdt(val));
     }
 
-    auto Substitute(auto&& val) {
+    auto Substitute(auto&& val) requires(requires{ ::Substitute(pat, InferAdt(fwd(val))); })  {
         ::Substitute(pat, InferAdt(fwd(val)));
         return callback();
     }
@@ -364,6 +364,11 @@ std::strong_ordering CmpViability(auto&& lhs, auto&& rhs) {
 
 auto Match(auto&& val) {
     return [&val] (auto&&... complete_cases) mutable {
+static_assert([] <typename... Ts> (std::type_identity<std::variant<Ts...>>) {
+    return ([] <typename T> (std::type_identity<T>) {
+        return (requires { complete_cases.Satisfy(std::declval<T>()); } || ...);
+    } (std::type_identity<Ts>{}) && ...);
+} (std::type_identity<std::remove_cvref_t<decltype(InferAdt(val))>>{}));
         const auto sat = std::array{ complete_cases.Satisfy(std::as_const(val))... };
         OptionalWrapped<std::common_type_t<decltype(complete_cases.callback())...>> res;
         ConstexprLoop<0u, sizeof...(complete_cases)>([&] <size_t Idx> (this auto self, cw<Idx>) {
